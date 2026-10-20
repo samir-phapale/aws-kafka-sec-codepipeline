@@ -1,0 +1,40 @@
+# Plan stage (deploy and destroy pipelines). Writes tfplan and checks it
+# against the OPA policies. The approver reviews this build's log.
+#
+# The output artifact is the whole working directory, not only tfplan: the
+# Lambda zips that archive_file builds during plan must exist at apply time,
+# and .terraform.lock.hcl pins the same provider versions for apply.
+# TF_PLAN_ARGS is set to -destroy by the destroy pipeline.
+version: 0.2
+
+env:
+  variables:
+    TF_IN_AUTOMATION: "true"
+    TF_INPUT: "0"
+
+phases:
+  install:
+    commands:
+      - bash scripts/ci/install-tools.sh terraform conftest
+  pre_build:
+    commands:
+      - bash scripts/ci/tf-init.sh
+  build:
+    commands:
+      - terraform plan -input=false -no-color ${TF_PLAN_ARGS:-} -out=tfplan
+      # plan.json holds the full planned values, including sensitive ones,
+      # so it is never printed and never leaves this build.
+      - terraform show -json tfplan > plan.json
+      - conftest test plan.json --policy policy --all-namespaces --no-color
+  post_build:
+    commands:
+      - rm -f plan.json
+
+artifacts:
+  files:
+    - "**/*"
+    - .terraform.lock.hcl
+  exclude-paths:
+    - ".terraform/**/*"
+    - "pipeline/.terraform/**/*"
+    - plan.json

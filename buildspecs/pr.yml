@@ -1,0 +1,35 @@
+# Pull request check (CodeBuild webhook, status reported on the PR).
+#
+# pipeline/ embeds this file into the CodeBuild project when the pipeline is
+# deployed, so a pull request cannot change what this build runs. It still
+# runs the PR's Terraform code, which is why its role is read-only and the
+# plan does not take the state lock.
+version: 0.2
+
+env:
+  variables:
+    TF_IN_AUTOMATION: "true"
+    TF_INPUT: "0"
+
+phases:
+  install:
+    runtime-versions:
+      python: 3.12
+    commands:
+      - bash scripts/ci/install-tools.sh terraform conftest
+      - pip install --quiet -r tests/requirements.txt
+  build:
+    commands:
+      - terraform fmt -check -recursive -diff
+      - pytest tests/test_phase3_logic.py tests/test_remediation.py -v
+      - conftest verify --policy policy --no-color
+      - bash scripts/ci/tf-init.sh
+      - terraform validate -no-color
+      - terraform -chdir=pipeline init -backend=false -input=false -no-color
+      - terraform -chdir=pipeline validate -no-color
+      - terraform plan -input=false -no-color -lock=false -out=tfplan
+      - terraform show -json tfplan > plan.json
+      - conftest test plan.json --policy policy --all-namespaces --no-color
+  post_build:
+    commands:
+      - rm -f plan.json tfplan

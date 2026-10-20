@@ -1,0 +1,15 @@
+aws_region   = "us-east-1"
+project_name = "kafka-on-ec2-cp"
+environment  = "dev"
+
+github_repository = "REPLACE_OWNER/aws-kafka-sec-codepipeline"
+branch            = "main"
+
+tf_state_bucket = "REPLACE_WITH_YOUR_TERRAFORM_STATE_BUCKET"
+tf_state_key    = "aws-kafka-sec-codepipeline/dev/terraform.tfstate"
+
+notification_email = "you@example.com"
+
+# Numeric GitHub user IDs allowed to trigger the PR check
+# (curl https://api.github.com/users/<login> | jq .id). Empty = no PR check.
+pr_allowed_github_user_ids = []

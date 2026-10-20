@@ -1,0 +1,40 @@
+# Terraform
+**/.terraform/*
+*.tfstate
+*.tfstate.*
+*.tfplan
+crash.log
+crash.*.log
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+
+# Environment-specific backend config (not secret, but environment-specific)
+backend.hcl
+
+# Python
+__pycache__/
+*.pyc
+.pytest_cache/
+.venv/
+venv/
+
+# OS / editor
+.DS_Store
+.vscode/
+
+# Phase 3 generated artifacts
+modules/config_controls/lambda/**/*.zip
+__pycache__/
+.pytest_cache/
+
+# Local-only reference notes (not published)
+docs/
+
+# Saved plans
+tfplan
+plan.json
+
+# Pipeline inputs (repository, email, GitHub user IDs)
+pipeline/terraform.tfvars

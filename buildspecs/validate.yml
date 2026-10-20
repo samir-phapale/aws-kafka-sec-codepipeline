@@ -1,0 +1,25 @@
+# Validate stage: static checks only. Runs under a role with no AWS
+# permissions beyond logs and the pipeline artifacts.
+version: 0.2
+
+env:
+  variables:
+    TF_IN_AUTOMATION: "true"
+    TF_INPUT: "0"
+
+phases:
+  install:
+    runtime-versions:
+      python: 3.12
+    commands:
+      - bash scripts/ci/install-tools.sh terraform conftest
+      - pip install --quiet -r tests/requirements.txt
+  build:
+    commands:
+      - terraform fmt -check -recursive -diff
+      - terraform init -backend=false -input=false -no-color
+      - terraform validate -no-color
+      - terraform -chdir=pipeline init -backend=false -input=false -no-color
+      - terraform -chdir=pipeline validate -no-color
+      - pytest tests/test_phase3_logic.py tests/test_remediation.py -v
+      - conftest verify --policy policy --no-color

@@ -1,0 +1,57 @@
+description: |
+  ### Phase 3 reactive remediation: S3 Public Access Block
+
+  Run by AWS Config when the reactive rule reports a bucket NON_COMPLIANT.
+
+  1. **VerifyScopeTag** - refuses to touch a bucket without the Phase 3 scope tag.
+  2. **EnablePublicAccessBlock** - turns on all four settings and records the prior state.
+  3. **VerifyPublicAccessBlock** - confirms all four settings are on.
+schemaVersion: "0.3"
+assumeRole: "{{ AutomationAssumeRole }}"
+parameters:
+  AutomationAssumeRole:
+    type: String
+    description: IAM role SSM Automation assumes to remediate the bucket.
+  BucketName:
+    type: String
+    description: Name of the non-compliant S3 bucket.
+    allowedPattern: "^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$"
+  ScopeTagKey:
+    type: String
+    description: Tag key a bucket must carry to be remediated.
+  ScopeTagValue:
+    type: String
+    description: Tag value a bucket must carry to be remediated.
+mainSteps:
+  - name: VerifyScopeTag
+    action: aws:executeScript
+    onFailure: Abort
+    inputs:
+      Runtime: python3.11
+      Handler: verify_scope_tag
+      InputPayload:
+        BucketName: "{{ BucketName }}"
+        ScopeTagKey: "{{ ScopeTagKey }}"
+        ScopeTagValue: "{{ ScopeTagValue }}"
+      Script: |-
+        ${indent(8, script)}
+  - name: EnablePublicAccessBlock
+    action: aws:executeScript
+    onFailure: Abort
+    inputs:
+      Runtime: python3.11
+      Handler: enable_public_access_block
+      InputPayload:
+        BucketName: "{{ BucketName }}"
+      Script: |-
+        ${indent(8, script)}
+  - name: VerifyPublicAccessBlock
+    action: aws:executeScript
+    isEnd: true
+    inputs:
+      Runtime: python3.11
+      Handler: verify_public_access_block
+      InputPayload:
+        BucketName: "{{ BucketName }}"
+      Script: |-
+        ${indent(8, script)}

@@ -1,0 +1,67 @@
+Resources:
+  # Detective: periodic check, report only. Periodic rules have no change
+  # scope, so the Lambda itself only evaluates buckets with the scope tag.
+  S3VersioningDetective:
+    Type: AWS::Config::ConfigRule
+    Properties:
+      ConfigRuleName: ${name_prefix}-s3-versioning-detective
+      Description: S3 buckets carrying the Phase 3 scope tag must have versioning enabled.
+      InputParameters:
+        TagKey: "${scope_tag_key}"
+        TagValue: "${scope_tag_value}"
+      Source:
+        Owner: CUSTOM_LAMBDA
+        SourceIdentifier: "${detective_lambda_arn}"
+        SourceDetails:
+          - EventSource: aws.config
+            MessageType: ScheduledNotification
+      MaximumExecutionFrequency: ${detective_frequency}
+
+  # Reactive: change-triggered, scoped by tag so only our buckets are
+  # evaluated (and therefore remediated).
+  S3PublicAccessReactive:
+    Type: AWS::Config::ConfigRule
+    Properties:
+      ConfigRuleName: ${name_prefix}-s3-public-access-reactive
+      Description: S3 buckets carrying the Phase 3 scope tag must enable all four Public Access Block settings; violations are remediated automatically.
+      InputParameters:
+        TagKey: "${scope_tag_key}"
+        TagValue: "${scope_tag_value}"
+      Scope:
+        TagKey: "${scope_tag_key}"
+        TagValue: "${scope_tag_value}"
+      Source:
+        Owner: CUSTOM_LAMBDA
+        SourceIdentifier: "${reactive_lambda_arn}"
+        SourceDetails:
+          - EventSource: aws.config
+            MessageType: ConfigurationItemChangeNotification
+          - EventSource: aws.config
+            MessageType: OversizedConfigurationItemChangeNotification
+
+  S3PublicAccessRemediation:
+    Type: AWS::Config::RemediationConfiguration
+    Properties:
+      ConfigRuleName: ${name_prefix}-s3-public-access-reactive
+      TargetType: SSM_DOCUMENT
+      TargetId: ${remediation_document}
+      Automatic: true
+      MaximumAutomaticAttempts: 3
+      RetryAttemptSeconds: 120
+      ResourceType: AWS::S3::Bucket
+      Parameters:
+        AutomationAssumeRole:
+          StaticValue:
+            Values:
+              - "${remediation_role_arn}"
+        BucketName:
+          ResourceValue:
+            Value: RESOURCE_ID
+        ScopeTagKey:
+          StaticValue:
+            Values:
+              - "${scope_tag_key}"
+        ScopeTagValue:
+          StaticValue:
+            Values:
+              - "${scope_tag_value}"
