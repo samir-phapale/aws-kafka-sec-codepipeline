@@ -24,7 +24,10 @@ id -u kafka &>/dev/null || useradd -m -s /sbin/nologin kafka
 echo "=== Downloading Kafka $${KAFKA_VERSION} (Scala $${SCALA_VERSION}) ==="
 KAFKA_DIST="kafka_$${SCALA_VERSION}-$${KAFKA_VERSION}"
 cd /opt
-wget -q "https://dlcdn.apache.org/kafka/$${KAFKA_VERSION}/$${KAFKA_DIST}.tgz" -O /opt/kafka.tgz
+# Current releases are on the CDN; older ones only on the archive.
+wget -q "https://dlcdn.apache.org/kafka/$${KAFKA_VERSION}/$${KAFKA_DIST}.tgz" -O /opt/kafka.tgz \
+  || wget -q "https://archive.apache.org/dist/kafka/$${KAFKA_VERSION}/$${KAFKA_DIST}.tgz" -O /opt/kafka.tgz
+echo "${kafka_sha512}  /opt/kafka.tgz" | sha512sum -c -
 tar -xzf /opt/kafka.tgz -C /opt
 rm -f /opt/kafka.tgz
 ln -sfn "/opt/$${KAFKA_DIST}" /opt/kafka
@@ -40,7 +43,7 @@ cat > /usr/local/bin/kafka-client-config <<'HELPER'
 # Writes a temporary Kafka client config (mode 600) carrying the SASL/SCRAM
 # credential from Secrets Manager and prints its path. Delete it when done:
 #   CFG=$(kafka-client-config)
-#   /opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:9092 --command-config "$CFG" --list
+#   /opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:${kafka_port} --command-config "$CFG" --list
 #   rm -f "$CFG"
 set -euo pipefail
 SECRET_JSON=$(aws secretsmanager get-secret-value --region "${secret_region}" --secret-id "${kafka_secret_arn}" --query SecretString --output text)
@@ -88,10 +91,10 @@ install -m 600 -o kafka -g kafka /dev/null /opt/kafka/config/server.properties
 cat > /opt/kafka/config/server.properties <<EOF
 process.roles=broker,controller
 node.id=1
-controller.quorum.bootstrap.servers=$${PRIVATE_IP}:9093
-listeners=SASL_PLAINTEXT://0.0.0.0:9092,CONTROLLER://0.0.0.0:9093
+controller.quorum.bootstrap.servers=127.0.0.1:9093
+listeners=SASL_PLAINTEXT://0.0.0.0:${kafka_port},CONTROLLER://127.0.0.1:9093
 inter.broker.listener.name=SASL_PLAINTEXT
-advertised.listeners=SASL_PLAINTEXT://$${PRIVATE_IP}:9092
+advertised.listeners=SASL_PLAINTEXT://$${PRIVATE_IP}:${kafka_port}
 controller.listener.names=CONTROLLER
 listener.security.protocol.map=CONTROLLER:PLAINTEXT,SASL_PLAINTEXT:SASL_PLAINTEXT
 sasl.enabled.mechanisms=SCRAM-SHA-512
@@ -147,7 +150,7 @@ chown kafka:kafka "$${CLIENT_CONFIG}"
 
 READY=0
 for i in $(seq 1 30); do
-  if /opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server localhost:9092 --command-config "$${CLIENT_CONFIG}" >/dev/null 2>&1; then
+  if /opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server localhost:${kafka_port} --command-config "$${CLIENT_CONFIG}" >/dev/null 2>&1; then
     READY=1
     break
   fi
@@ -162,7 +165,7 @@ fi
 echo "=== Creating topic '$${TOPIC_NAME}' ==="
 sudo -u kafka /opt/kafka/bin/kafka-topics.sh --create --if-not-exists \
   --topic "$${TOPIC_NAME}" \
-  --bootstrap-server localhost:9092 \
+  --bootstrap-server localhost:${kafka_port} \
   --command-config "$${CLIENT_CONFIG}" \
   --partitions "$${TOPIC_PARTITIONS}" \
   --replication-factor "$${TOPIC_REPLICATION_FACTOR}"

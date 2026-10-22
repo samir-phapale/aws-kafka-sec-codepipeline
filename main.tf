@@ -47,6 +47,8 @@ module "ec2_kafka" {
   instance_type            = var.instance_type
   root_volume_size         = var.root_volume_size
   kafka_version            = var.kafka_version
+  kafka_sha512             = var.kafka_sha512
+  kafka_port               = var.kafka_port
   scala_version            = var.scala_version
   topic_name               = var.kafka_topic_name
   topic_partitions         = var.kafka_topic_partitions

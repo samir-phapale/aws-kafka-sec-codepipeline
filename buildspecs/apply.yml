@@ -6,6 +6,7 @@ env:
     - INSTANCE_ID
     - TOPIC_NAME
     - SECRET_ARN
+    - BOOTSTRAP_SERVER
 
 phases:
   install:
@@ -18,3 +19,4 @@ phases:
       - export INSTANCE_ID="$(terraform output -raw instance_id)"
       - export TOPIC_NAME="$(terraform output -raw kafka_topic_name)"
       - export SECRET_ARN="$(terraform output -raw phase3_secret_arn)"
+      - export BOOTSTRAP_SERVER="$(terraform output -raw kafka_bootstrap_server)"

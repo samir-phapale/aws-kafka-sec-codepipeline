@@ -65,9 +65,15 @@ variable "root_volume_size" {
 }
 
 variable "kafka_version" {
-  description = "Apache Kafka version to install - must be a version still hosted on Apache's fast CDN mirror (dlcdn.apache.org), not one that has fallen back to the throttled archive.apache.org"
+  description = "Apache Kafka version to install"
   type        = string
   default     = "4.1.2"
+}
+
+variable "kafka_sha512" {
+  description = "SHA-512 of kafka_<scala>-<version>.tgz from downloads.apache.org/kafka/<version>/; change it together with kafka_version"
+  type        = string
+  default     = "78ac6e488b1071122f9608dfdb363f6fe50e1dbbc492347002c0398dfbf77e0d8caa5bf794c5937379721004dfe92025937d238b0faf4eb715529417fd43b491"
 }
 
 variable "scala_version" {

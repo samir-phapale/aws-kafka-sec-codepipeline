@@ -45,7 +45,7 @@ output "kafka_topic_name" {
 
 output "kafka_bootstrap_server" {
   description = "Kafka bootstrap server (SASL_PLAINTEXT, SCRAM-SHA-512), reachable only from inside the instance itself. On the broker, run kafka-client-config to get a client config with the credential from Secrets Manager."
-  value       = "localhost:9092"
+  value       = "localhost:${var.kafka_port}"
 }
 
 output "ssm_connect_command" {

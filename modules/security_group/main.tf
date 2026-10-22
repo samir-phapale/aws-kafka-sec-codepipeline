@@ -28,15 +28,6 @@ resource "aws_vpc_security_group_ingress_rule" "kafka_broker_self" {
   ip_protocol                  = "tcp"
 }
 
-resource "aws_vpc_security_group_ingress_rule" "kafka_controller_self" {
-  security_group_id            = aws_security_group.kafka.id
-  description                  = "Kafka KRaft controller port from within this security group"
-  referenced_security_group_id = aws_security_group.kafka.id
-  from_port                    = var.kafka_controller_port
-  to_port                      = var.kafka_controller_port
-  ip_protocol                  = "tcp"
-}
-
 resource "aws_vpc_security_group_ingress_rule" "kafka_broker_vpc" {
   count             = var.allow_internal_kafka_access ? 1 : 0
   security_group_id = aws_security_group.kafka.id
