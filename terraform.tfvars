@@ -19,3 +19,5 @@ scala_version = "2.13"
 kafka_topic_name               = "demo-topic"
 kafka_topic_partitions         = 3
 kafka_topic_replication_factor = 1
+
+permissions_boundary_name = "kafka-on-ec2-cp-cicd-dev-stack-boundary"

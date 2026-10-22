@@ -15,8 +15,9 @@ data "aws_iam_policy_document" "ec2_assume_role" {
 }
 
 resource "aws_iam_role" "kafka_instance" {
-  name               = "${local.name_prefix}-kafka-instance-role"
-  assume_role_policy = data.aws_iam_policy_document.ec2_assume_role.json
+  name                 = "${local.name_prefix}-kafka-instance-role"
+  assume_role_policy   = data.aws_iam_policy_document.ec2_assume_role.json
+  permissions_boundary = var.permissions_boundary_arn
 
   tags = {
     Name = "${local.name_prefix}-kafka-instance-role"

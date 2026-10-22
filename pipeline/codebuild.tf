@@ -1,61 +1,28 @@
-# ---------------------------------------------------------------------------
-# CodeBuild projects run by the pipelines. Their buildspecs are read from
-# the repository revision being built (buildspecs/), so build changes ship
-# through the same reviewed main branch as the infrastructure.
-# ---------------------------------------------------------------------------
-
 locals {
-  pipeline_projects = {
-    validate = {
-      role        = "validate"
-      buildspec   = "buildspecs/validate.yml"
-      timeout     = 20
-      concurrency = null
-    }
-    plan = {
-      role        = "plan"
-      buildspec   = "buildspecs/plan.yml"
-      timeout     = 30
-      concurrency = null
-    }
-    apply = {
-      role        = "deploy"
-      buildspec   = "buildspecs/apply.yml"
-      timeout     = 60
-      concurrency = 1
-    }
-    integration = {
-      role        = "integration"
-      buildspec   = "buildspecs/integration.yml"
-      timeout     = 45
-      concurrency = null
-    }
-    destroy = {
-      role        = "deploy"
-      buildspec   = "buildspecs/destroy.yml"
-      timeout     = 60
-      concurrency = 1
-    }
+  # Project name => service role. Buildspecs come from buildspecs/<name>.yml.
+  projects = {
+    validate    = "validate"
+    plan        = "plan"
+    apply       = "deploy"
+    integration = "integration"
+    destroy     = "deploy"
   }
-
-  log_groups = toset(concat(keys(local.pipeline_projects), ["pr"]))
 }
 
 resource "aws_cloudwatch_log_group" "codebuild" {
-  for_each = local.log_groups
+  for_each = toset(concat(keys(local.projects), ["pr"]))
 
   name              = "/aws/codebuild/${local.cicd_prefix}-${each.key}"
-  retention_in_days = var.log_retention_days
+  retention_in_days = 30
 }
 
-resource "aws_codebuild_project" "pipeline" {
-  for_each = local.pipeline_projects
+resource "aws_codebuild_project" "this" {
+  for_each = local.projects
 
   name                   = "${local.cicd_prefix}-${each.key}"
-  description            = "${local.cicd_prefix} pipeline: ${each.key}"
-  service_role           = aws_iam_role.codebuild[each.value.role].arn
-  build_timeout          = each.value.timeout
-  concurrent_build_limit = each.value.concurrency
+  service_role           = aws_iam_role.codebuild[each.value].arn
+  build_timeout          = 60
+  concurrent_build_limit = each.value == "deploy" ? 1 : null
   encryption_key         = aws_kms_key.cicd.arn
 
   artifacts {
@@ -64,21 +31,32 @@ resource "aws_codebuild_project" "pipeline" {
 
   source {
     type      = "CODEPIPELINE"
-    buildspec = each.value.buildspec
+    buildspec = "buildspecs/${each.key}.yml"
   }
 
   environment {
-    compute_type                = "BUILD_GENERAL1_SMALL"
-    image                       = var.codebuild_image
-    type                        = "LINUX_CONTAINER"
-    image_pull_credentials_type = "CODEBUILD"
+    compute_type = "BUILD_GENERAL1_SMALL"
+    image        = local.codebuild_image
+    type         = "LINUX_CONTAINER"
 
-    dynamic "environment_variable" {
-      for_each = local.build_environment
-      content {
-        name  = environment_variable.key
-        value = environment_variable.value
-      }
+    environment_variable {
+      name  = "TF_STATE_BUCKET"
+      value = var.tf_state_bucket
+    }
+
+    environment_variable {
+      name  = "TF_STATE_KEY"
+      value = var.tf_state_key
+    }
+
+    environment_variable {
+      name  = "TERRAFORM_VERSION"
+      value = var.terraform_version
+    }
+
+    environment_variable {
+      name  = "CONFTEST_VERSION"
+      value = var.conftest_version
     }
   }
 
@@ -91,29 +69,15 @@ resource "aws_codebuild_project" "pipeline" {
   depends_on = [aws_iam_role_policy.codebuild]
 }
 
-# ---------------------------------------------------------------------------
-# Pull request check: a CodeBuild webhook on the GitHub repository that
-# reports its result as a status check on the PR.
-#
-# Only created when pr_allowed_github_user_ids is set, and only PRs opened
-# by those GitHub users trigger it. The buildspec is embedded here from main,
-# so a PR cannot change the commands; the PR's Terraform code still runs,
-# which is why the role is read-only.
-# ---------------------------------------------------------------------------
-
-locals {
-  pr_check_enabled = length(var.pr_allowed_github_user_ids) > 0
-}
-
+# PR check: runs buildspecs/validate.yml (embedded from main) on every PR from
+# an allow-listed GitHub user and reports the result on the PR. It runs the PR
+# author's code, so its role has no AWS access beyond its own logs.
 resource "aws_codebuild_project" "pr" {
-  count = local.pr_check_enabled ? 1 : 0
+  count = length(var.pr_allowed_github_user_ids) > 0 ? 1 : 0
 
   name          = "${local.cicd_prefix}-pr"
-  description   = "${local.cicd_prefix}: validate and plan pull requests to ${var.branch}"
   service_role  = aws_iam_role.codebuild["pr"].arn
-  build_timeout = 30
-
-  encryption_key = aws_kms_key.cicd.arn
+  build_timeout = 20
 
   artifacts {
     type = "NO_ARTIFACTS"
@@ -124,7 +88,7 @@ resource "aws_codebuild_project" "pr" {
     location            = "https://github.com/${var.github_repository}.git"
     git_clone_depth     = 1
     report_build_status = true
-    buildspec           = file("${path.module}/../buildspecs/pr.yml")
+    buildspec           = file("${path.module}/../buildspecs/validate.yml")
 
     auth {
       type     = "CODECONNECTIONS"
@@ -133,17 +97,18 @@ resource "aws_codebuild_project" "pr" {
   }
 
   environment {
-    compute_type                = "BUILD_GENERAL1_SMALL"
-    image                       = var.codebuild_image
-    type                        = "LINUX_CONTAINER"
-    image_pull_credentials_type = "CODEBUILD"
+    compute_type = "BUILD_GENERAL1_SMALL"
+    image        = local.codebuild_image
+    type         = "LINUX_CONTAINER"
 
-    dynamic "environment_variable" {
-      for_each = local.build_environment
-      content {
-        name  = environment_variable.key
-        value = environment_variable.value
-      }
+    environment_variable {
+      name  = "TERRAFORM_VERSION"
+      value = var.terraform_version
+    }
+
+    environment_variable {
+      name  = "CONFTEST_VERSION"
+      value = var.conftest_version
     }
   }
 
@@ -157,7 +122,7 @@ resource "aws_codebuild_project" "pr" {
 }
 
 resource "aws_codebuild_webhook" "pr" {
-  count = local.pr_check_enabled ? 1 : 0
+  count = length(aws_codebuild_project.pr)
 
   project_name = aws_codebuild_project.pr[0].name
   build_type   = "BUILD"

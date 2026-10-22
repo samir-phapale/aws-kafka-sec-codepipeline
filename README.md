@@ -125,7 +125,7 @@ Where it runs:
 
 | Where | Check |
 |---|---|
-| PR check (`buildspecs/pr.yml`) | `conftest verify` (policy unit tests) and `conftest test` on the PR's plan |
+| PR check | `conftest verify` |
 | Deploy pipeline, Validate stage | `conftest verify` |
 | Deploy pipeline, Plan stage | `conftest test` on the plan that is then approved and applied (`terraform apply tfplan`) |
 
@@ -135,13 +135,12 @@ Where it runs:
 aws-kafka-sec-codepipeline/
 ├── pipeline/                       CI/CD infrastructure (own Terraform root + state, applied by an admin)
 │   ├── main.tf                     naming, GitHub connection (CodeConnections)
-│   ├── artifacts.tf                KMS key, artifact bucket, SNS topic + notifications
+│   ├── boundary.tf                 permissions boundary every stack role must carry
+│   ├── artifacts.tf                KMS key, artifact bucket, approval topic
 │   ├── iam.tf                      one role per stage + the CodePipeline role
-│   ├── codebuild.tf                stage projects + PR-check project and webhook
+│   ├── codebuild.tf                stage projects + PR check
 │   └── codepipeline.tf             deploy and destroy pipelines
-├── buildspecs/                     what each CodeBuild job runs
-│   ├── validate.yml  plan.yml  apply.yml  integration.yml  destroy.yml
-│   └── pr.yml                      PR check (embedded into its project at pipeline deploy time)
+├── buildspecs/                     validate (also the PR check), plan, apply, integration, destroy
 ├── modules/
 │   ├── vpc/                        VPC, public/private subnets, routing
 │   ├── security_group/             broker SG (Kafka ports only from itself)
@@ -165,8 +164,7 @@ aws-kafka-sec-codepipeline/
 │   └── test_kafka_e2e.py           on the broker via SSM: authenticated produce/consume,
 │                                   auth rejection, credential-leak checks
 ├── scripts/
-│   ├── ci/                         used by the buildspecs: pinned, checksum-verified tool
-│   │                               install, terraform init, wait-for-broker
+│   ├── ci/                         tool install, terraform init, wait-for-broker
 │   ├── create_test_resources.sh    creates two tagged, non-compliant test buckets
 │   └── cleanup.sh                  deletes those test buckets
 ├── main.tf  variables.tf  outputs.tf  providers.tf
@@ -183,11 +181,12 @@ aws-kafka-sec-codepipeline/
 
 ## Deploy
 
+Deploy through the pipeline (see [CI/CD](#cicd)). Local runs skip the review and approval, so use them only to inspect:
+
 ```bash
-cp backend.hcl.example backend.hcl     # set your state bucket
+cp backend.hcl.example backend.hcl
 terraform init -backend-config=backend.hcl
 terraform plan
-terraform apply
 ```
 
 Key outputs:
@@ -261,12 +260,12 @@ Covers: authenticated produce/consume; a client with no credential and one with 
 ## CI/CD
 
 ```text
-Pull request to main ─► CodeBuild webhook (pr.yml, read-only role) ─► status check on the PR
+Pull request to main ─► CodeBuild (validate.yml, no AWS access) ─► status check on the PR
 
-push to main ─► deploy pipeline (CodePipeline V2, QUEUED)
+push to main ─► deploy pipeline (Markdown-only pushes are skipped)
   Source       GitHub via CodeConnections
-  Validate     fmt, validate, unit tests, conftest verify      role: validate (no AWS access)
-  Plan         plan -out=tfplan, conftest test                 role: plan (read-only + state lock)
+  Validate     fmt, validate, unit tests, conftest verify      role: validate
+  Plan         plan -out=tfplan, conftest test                 role: plan (read-only)
   Approve      manual approval, emailed via SNS
   Apply        terraform apply tfplan  (the approved plan)     role: deploy
   Integration  start broker, wait for SSM, Kafka e2e tests     role: integration
@@ -279,22 +278,28 @@ Release change (manual) ─► destroy pipeline
 
 | Concern | How it is handled |
 |---|---|
-| No long-lived credentials | Every job runs under its CodeBuild service role; nothing is stored in GitHub |
-| Least privilege per stage | Six roles (`pipeline/iam.tf`); only Apply/Destroy can change AWS |
-| Deploy role cannot escalate | IAM limited to `<project>-<env>-*` roles, only two approved managed policies may be attached, explicit denies on the pipeline's own roles, projects, pipelines, key, bucket, topic and connection |
-| PR code is untrusted | PR builds use a read-only role, take no state lock, and only run for allow-listed GitHub user IDs; the PR buildspec is fixed from `main` |
-| Read-only is really read-only | `ReadOnlyAccess` plus denies on reading S3 objects outside state/artifacts and on SSM parameter values |
-| Reviewed plan = applied plan | `tfplan` travels as a KMS-encrypted artifact; Terraform rejects it if the state moved |
-| Supply chain | Terraform and conftest versions pinned and SHA-256 verified (`scripts/ci/install-tools.sh`); no third-party CI actions |
+| No stored credentials | Every job runs under its own CodeBuild role (`pipeline/iam.tf`) |
+| Stack roles are capped | Every stack role carries a permissions boundary (`pipeline/boundary.tf`); the deploy role cannot create or change a role without it |
+| Pipeline cannot change itself | The deploy role is denied the pipeline's roles, projects, pipelines, key, buckets and topic; `pipeline/` is applied by an administrator |
+| Own state only | Plan and deploy can only access this stack's state file and the pipeline artifacts, not other state files in the bucket |
+| PR builds | Static checks only, with no AWS access; only PRs from allow-listed GitHub users run |
+| Reviewed plan = applied plan | Apply uses the approved `tfplan`; Terraform rejects it if the state changed |
+| Supply chain | Terraform and conftest pinned and checksum-verified |
 
-**Runs alongside the original `aws-kafka-sec` deployment.** This repository uses its own project name (`kafka-on-ec2-cp`) and its own state keys (`aws-kafka-sec-codepipeline/...`) in the same state bucket, so it creates a separate stack: every resource name, the secret, the scope tag value (`Phase3Scope = kafka-on-ec2-cp-dev`) and the IAM scope of the pipeline roles differ from the original `kafka-on-ec2-dev` resources, which it never touches.
+**Known limitations**
+
+- Anyone in the account with `codepipeline:PutApprovalResult` can approve; restricting approvers needs an account-level policy.
+- The plan role uses `ReadOnlyAccess`, which can still read some data (for example CloudWatch Logs); only reviewed code from `main` runs with it.
+- The boundary allows `s3:PutBucketPublicAccessBlock` on any bucket (S3 cannot scope it by tag); the scope-tag checks decide which buckets change.
+
+**Separate from the original `aws-kafka-sec` stack:** project name `kafka-on-ec2-cp` and state keys under `aws-kafka-sec-codepipeline/`, so no resource is shared.
 
 **Bootstrap (once, by an administrator):**
 
 ```bash
 cd pipeline
-cp backend.hcl.example backend.hcl            # same state bucket, key aws-kafka-sec-codepipeline/cicd/terraform.tfstate
-cp terraform.tfvars.example terraform.tfvars  # repo, state bucket, email, PR user IDs
+cp backend.hcl.example backend.hcl
+cp terraform.tfvars.example terraform.tfvars
 terraform init -backend-config=backend.hcl
 terraform apply -target=aws_codestarconnections_connection.github
 #   Console → Developer Tools → Settings → Connections → complete the pending connection
@@ -302,10 +307,12 @@ terraform apply
 ```
 
 1. Confirm the SNS subscription email.
-2. The deploy pipeline starts once on creation and waits at **Approve**; review the Plan log and approve.
-3. Changes to `pipeline/` are **not** deployed by the pipeline itself (so it can never widen its own permissions); re-run `terraform apply` in `pipeline/` after reviewing them.
+2. Both pipelines run once when created: **reject** the destroy approval; review the deploy Plan log and **approve**.
+3. Changes to `pipeline/` are applied by hand (`terraform apply` in `pipeline/`), never by the pipeline.
 
-> The deploy pipeline does not destroy the stack after testing; run the destroy pipeline (**Release change**) when finished to avoid ongoing EC2 cost.
+> Run the destroy pipeline (**Release change**) when finished to avoid EC2 cost.
+>
+> If Apply fails with **Saved plan is stale**, start a new run with **Release change** instead of **Retry**.
 
 ## Cleanup
 
@@ -313,9 +320,9 @@ terraform apply
 export PHASE3_VERSIONING_BUCKET=<bucket>
 export PHASE3_REACTIVE_BUCKET=<bucket>
 bash scripts/cleanup.sh
-
-terraform destroy
 ```
+
+Then remove the stack with the destroy pipeline (**Release change** → review the PlanDestroy log → approve). To remove the pipeline itself afterwards, run `terraform destroy` in `pipeline/` as an administrator.
 
 ## Roadmap
 

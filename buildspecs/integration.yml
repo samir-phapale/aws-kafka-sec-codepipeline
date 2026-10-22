@@ -1,6 +1,3 @@
-# Integration stage: Kafka end-to-end tests over SSM. KAFKA_INSTANCE_ID,
-# KAFKA_TOPIC_NAME and KAFKA_SECRET_ARN come from the Apply stage's exported
-# variables, so this role never reads Terraform state.
 version: 0.2
 
 phases:
@@ -9,9 +6,7 @@ phases:
       python: 3.12
     commands:
       - pip install --quiet -r tests/requirements.txt
-  pre_build:
-    commands:
-      - bash scripts/ci/wait-for-broker.sh "${KAFKA_INSTANCE_ID:?KAFKA_INSTANCE_ID is not set}"
   build:
     commands:
-      - pytest tests/test_kafka_e2e.py -v -s
+      - bash scripts/ci/wait-for-broker.sh "$KAFKA_INSTANCE_ID"
+      - pytest tests/test_kafka_e2e.py -v

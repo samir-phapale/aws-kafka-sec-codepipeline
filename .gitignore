@@ -26,8 +26,6 @@ venv/
 
 # Phase 3 generated artifacts
 modules/config_controls/lambda/**/*.zip
-__pycache__/
-.pytest_cache/
 
 # Local-only reference notes (not published)
 docs/
