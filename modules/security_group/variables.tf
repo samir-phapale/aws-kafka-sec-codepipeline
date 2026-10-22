@@ -24,12 +24,6 @@ variable "kafka_port" {
   default     = 9092
 }
 
-variable "kafka_controller_port" {
-  description = "Kafka KRaft controller port"
-  type        = number
-  default     = 9093
-}
-
 variable "allow_internal_kafka_access" {
   description = "If true, allow Kafka client port access from anywhere inside the VPC CIDR. Defaults to false: the producer/consumer run locally on the broker, and management is done over SSM, so no inbound Kafka access is required."
   type        = bool

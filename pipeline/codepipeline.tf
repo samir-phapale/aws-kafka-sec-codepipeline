@@ -144,6 +144,7 @@ resource "aws_codepipeline" "deploy" {
           { name = "KAFKA_INSTANCE_ID", value = "#{Apply.INSTANCE_ID}", type = "PLAINTEXT" },
           { name = "KAFKA_TOPIC_NAME", value = "#{Apply.TOPIC_NAME}", type = "PLAINTEXT" },
           { name = "KAFKA_SECRET_ARN", value = "#{Apply.SECRET_ARN}", type = "PLAINTEXT" },
+          { name = "KAFKA_BOOTSTRAP_SERVER", value = "#{Apply.BOOTSTRAP_SERVER}", type = "PLAINTEXT" },
         ])
       }
     }

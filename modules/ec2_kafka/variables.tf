@@ -42,9 +42,20 @@ variable "ami_id" {
 }
 
 variable "kafka_version" {
-  description = "Apache Kafka version to install - must be a version still hosted on Apache's fast CDN mirror (dlcdn.apache.org), not one that has fallen back to the throttled archive.apache.org"
+  description = "Apache Kafka version to install"
   type        = string
   default     = "4.1.2"
+}
+
+variable "kafka_sha512" {
+  description = "SHA-512 of the Kafka download (kafka_<scala>-<version>.tgz); change it together with kafka_version"
+  type        = string
+}
+
+variable "kafka_port" {
+  description = "Kafka client listener port"
+  type        = number
+  default     = 9092
 }
 
 variable "scala_version" {

@@ -9,6 +9,7 @@ import pytest
 
 AWS_REGION = os.environ.get("AWS_REGION", "us-east-1")
 TOPIC_NAME = os.environ.get("KAFKA_TOPIC_NAME", "demo-topic")
+BOOTSTRAP = os.environ.get("KAFKA_BOOTSTRAP_SERVER", "localhost:9092")
 COMMAND_TIMEOUT_SECONDS = 120
 KAFKA_BIN = "/opt/kafka/bin"
 # Installed by user data: writes a temporary SASL/SCRAM client config with the
@@ -103,7 +104,7 @@ def test_kafka_service_is_active(ssm_client, instance_id):
 
 def test_kafka_is_reachable(ssm_client, instance_id):
     command = with_client_config(
-        f'{KAFKA_BIN}/kafka-broker-api-versions.sh --bootstrap-server localhost:9092 --command-config "$CFG"'
+        f'{KAFKA_BIN}/kafka-broker-api-versions.sh --bootstrap-server {BOOTSTRAP} --command-config "$CFG"'
     )
     result = run_remote_command(ssm_client, instance_id, [command])
     assert result["Status"] == "Success", result["StandardErrorContent"]
@@ -111,7 +112,7 @@ def test_kafka_is_reachable(ssm_client, instance_id):
 
 def test_kafka_topic_exists(ssm_client, instance_id):
     command = with_client_config(
-        f'{KAFKA_BIN}/kafka-topics.sh --list --bootstrap-server localhost:9092 --command-config "$CFG"'
+        f'{KAFKA_BIN}/kafka-topics.sh --list --bootstrap-server {BOOTSTRAP} --command-config "$CFG"'
     )
     result = run_remote_command(ssm_client, instance_id, [command])
     assert result["Status"] == "Success", result["StandardErrorContent"]
@@ -124,7 +125,7 @@ def test_producer_can_publish(ssm_client, instance_id):
     count = 3
     command = with_client_config(
         f'for i in $(seq 1 {count}); do echo "produce-check-{run_id}-$i"; done | '
-        f'{KAFKA_BIN}/kafka-console-producer.sh --bootstrap-server localhost:9092 '
+        f'{KAFKA_BIN}/kafka-console-producer.sh --bootstrap-server {BOOTSTRAP} '
         f'--producer.config "$CFG" --topic {TOPIC_NAME}'
     )
     result = run_remote_command(ssm_client, instance_id, [command])
@@ -137,8 +138,8 @@ def test_end_to_end_produce_and_consume(ssm_client, instance_id):
     count = 5
     tag = f"e2e-{run_id}"
     command = with_client_config(f"""
-for i in $(seq 1 {count}); do echo "{tag}-$i"; done | {KAFKA_BIN}/kafka-console-producer.sh --bootstrap-server localhost:9092 --producer.config "$CFG" --topic {TOPIC_NAME}
-RECEIVED=$({KAFKA_BIN}/kafka-console-consumer.sh --bootstrap-server localhost:9092 --consumer.config "$CFG" --topic {TOPIC_NAME} --from-beginning --timeout-ms 15000 2>/dev/null | grep -c "{tag}-" || true)
+for i in $(seq 1 {count}); do echo "{tag}-$i"; done | {KAFKA_BIN}/kafka-console-producer.sh --bootstrap-server {BOOTSTRAP} --producer.config "$CFG" --topic {TOPIC_NAME}
+RECEIVED=$({KAFKA_BIN}/kafka-console-consumer.sh --bootstrap-server {BOOTSTRAP} --consumer.config "$CFG" --topic {TOPIC_NAME} --from-beginning --timeout-ms 15000 2>/dev/null | grep -c "{tag}-" || true)
 echo "EXPECTED={count}"
 echo "RECEIVED=$RECEIVED"
 if [ "$RECEIVED" -eq "{count}" ]; then
@@ -165,7 +166,7 @@ def test_client_without_credentials_is_rejected(ssm_client, instance_id):
     # A plaintext client cannot complete the SASL handshake, so it never gets
     # metadata and gives up; `timeout` bounds the wait.
     command = f"""
-OUT=$(timeout 30 {KAFKA_BIN}/kafka-topics.sh --bootstrap-server localhost:9092 --list 2>&1) && RC=0 || RC=$?
+OUT=$(timeout 30 {KAFKA_BIN}/kafka-topics.sh --bootstrap-server {BOOTSTRAP} --list 2>&1) && RC=0 || RC=$?
 echo "EXIT=$RC"
 echo "$OUT" | grep -qx "{TOPIC_NAME}" && echo "TOPIC_VISIBLE" || echo "TOPIC_HIDDEN"
 """.strip()
@@ -179,7 +180,7 @@ echo "$OUT" | grep -qx "{TOPIC_NAME}" && echo "TOPIC_VISIBLE" || echo "TOPIC_HID
 def test_client_with_wrong_password_is_rejected(ssm_client, instance_id):
     command = with_client_config(f"""
 sed -i 's/password="[^"]*"/password="not-the-real-password"/' "$CFG"
-OUT=$(timeout 60 {KAFKA_BIN}/kafka-topics.sh --bootstrap-server localhost:9092 --command-config "$CFG" --list 2>&1) && RC=0 || RC=$?
+OUT=$(timeout 60 {KAFKA_BIN}/kafka-topics.sh --bootstrap-server {BOOTSTRAP} --command-config "$CFG" --list 2>&1) && RC=0 || RC=$?
 echo "EXIT=$RC"
 echo "$OUT" | grep -q "Authentication failed" && echo "AUTH_FAILED" || true
 """.strip())

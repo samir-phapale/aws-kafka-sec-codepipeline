@@ -43,6 +43,8 @@ resource "aws_instance" "kafka" {
 
   user_data = templatefile("${path.module}/templates/user_data.sh.tpl", {
     kafka_version            = var.kafka_version
+    kafka_sha512             = var.kafka_sha512
+    kafka_port               = var.kafka_port
     scala_version            = var.scala_version
     topic_name               = var.topic_name
     topic_partitions         = var.topic_partitions
@@ -56,5 +58,10 @@ resource "aws_instance" "kafka" {
 
   tags = {
     Name = "${local.name_prefix}-kafka-broker"
+  }
+
+  # A newer Amazon Linux AMI must not replace the broker (and its data).
+  lifecycle {
+    ignore_changes = [ami]
   }
 }
