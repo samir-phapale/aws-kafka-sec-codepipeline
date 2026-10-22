@@ -1,59 +1,43 @@
 #!/usr/bin/env bash
-# Makes sure the Kafka broker is running, reachable over SSM and finished
-# provisioning before the end-to-end tests run.
-#   wait-for-broker.sh <instance-id>
+# Starts the broker if needed and waits until SSM is online and Kafka is installed.
+# Usage: wait-for-broker.sh <instance-id>
 set -euo pipefail
 
-INSTANCE_ID="${1:?usage: wait-for-broker.sh <instance-id>}"
+instance_id="$1"
 
-# Cloud Custodian stops instances nightly, so the broker may be stopped.
-STATE=$(aws ec2 describe-instances --instance-ids "$INSTANCE_ID" \
+# Cloud Custodian stops instances nightly.
+state=$(aws ec2 describe-instances --instance-ids "$instance_id" \
   --query "Reservations[0].Instances[0].State.Name" --output text)
-echo "Broker state: $STATE"
-if [ "$STATE" = "stopping" ]; then
-  aws ec2 wait instance-stopped --instance-ids "$INSTANCE_ID"
-  STATE=stopped
+if [ "$state" = "stopping" ]; then
+  aws ec2 wait instance-stopped --instance-ids "$instance_id"
+  state=stopped
 fi
-if [ "$STATE" = "stopped" ]; then
-  aws ec2 start-instances --instance-ids "$INSTANCE_ID" >/dev/null
+if [ "$state" = "stopped" ]; then
+  aws ec2 start-instances --instance-ids "$instance_id" >/dev/null
 fi
-aws ec2 wait instance-running --instance-ids "$INSTANCE_ID"
+aws ec2 wait instance-running --instance-ids "$instance_id"
 
-STATUS=""
 for i in $(seq 1 30); do
-  STATUS=$(aws ssm describe-instance-information \
-    --filters "Key=InstanceIds,Values=${INSTANCE_ID}" \
+  ping=$(aws ssm describe-instance-information \
+    --filters "Key=InstanceIds,Values=$instance_id" \
     --query "InstanceInformationList[0].PingStatus" --output text)
-  if [ "$STATUS" = "Online" ]; then
-    echo "SSM agent online"
-    break
-  fi
-  echo "Waiting for SSM agent (attempt $i/30)..."
+  [ "$ping" = "Online" ] && break
+  echo "Waiting for SSM agent ($i/30)..."
   sleep 10
 done
-if [ "$STATUS" != "Online" ]; then
-  echo "SSM agent never came online"
-  exit 1
-fi
+[ "$ping" = "Online" ] || { echo "SSM agent never came online"; exit 1; }
 
-STATUS=""
 for i in $(seq 1 30); do
-  COMMAND_ID=$(aws ssm send-command \
-    --instance-ids "$INSTANCE_ID" \
-    --document-name "AWS-RunShellScript" \
+  command_id=$(aws ssm send-command --instance-ids "$instance_id" \
+    --document-name AWS-RunShellScript \
     --parameters '{"commands":["test -f /opt/kafka-ready"]}' \
     --query "Command.CommandId" --output text)
   sleep 5
-  STATUS=$(aws ssm get-command-invocation \
-    --command-id "$COMMAND_ID" \
-    --instance-id "$INSTANCE_ID" \
-    --query "Status" --output text 2>/dev/null || echo "Pending")
-  if [ "$STATUS" = "Success" ]; then
-    echo "Kafka provisioning complete (/opt/kafka-ready found)"
-    exit 0
-  fi
-  echo "Waiting for Kafka provisioning to finish (attempt $i/30, status=$STATUS)..."
+  status=$(aws ssm get-command-invocation --command-id "$command_id" \
+    --instance-id "$instance_id" --query Status --output text 2>/dev/null || echo Pending)
+  [ "$status" = "Success" ] && { echo "Kafka is ready"; exit 0; }
+  echo "Waiting for Kafka provisioning ($i/30, $status)..."
   sleep 15
 done
-echo "Kafka provisioning did not finish (/opt/kafka-ready not found)"
+echo "Kafka provisioning did not finish"
 exit 1

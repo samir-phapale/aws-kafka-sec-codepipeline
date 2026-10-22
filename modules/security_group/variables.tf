@@ -19,7 +19,7 @@ variable "vpc_cidr" {
 }
 
 variable "kafka_port" {
-  description = "Kafka broker (PLAINTEXT listener) port"
+  description = "Kafka client listener port (SASL_PLAINTEXT)"
   type        = number
   default     = 9092
 }

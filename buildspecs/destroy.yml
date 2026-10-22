@@ -1,19 +1,10 @@
-# Destroy stage: applies the approved `plan -destroy` from the PlanDestroy stage.
 version: 0.2
-
-env:
-  variables:
-    TF_IN_AUTOMATION: "true"
-    TF_INPUT: "0"
 
 phases:
   install:
     commands:
       - bash scripts/ci/install-tools.sh terraform
-  pre_build:
-    commands:
-      - test -f tfplan
-      - bash scripts/ci/tf-init.sh
   build:
     commands:
+      - bash scripts/ci/tf-init.sh
       - terraform apply -input=false -no-color tfplan

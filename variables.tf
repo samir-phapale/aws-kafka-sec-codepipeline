@@ -41,7 +41,7 @@ variable "azs" {
 }
 
 variable "kafka_port" {
-  description = "Kafka broker (PLAINTEXT listener) port"
+  description = "Kafka client listener port (SASL_PLAINTEXT)"
   type        = number
   default     = 9092
 }
@@ -120,6 +120,12 @@ variable "compliance_scope_tag_key" {
 
 variable "compliance_scope_tag_value" {
   description = "Tag value that opts an S3 bucket into the Phase 3 Config rules. If null, defaults to <project>-<environment>."
+  type        = string
+  default     = null
+}
+
+variable "permissions_boundary_name" {
+  description = "IAM policy used as permissions boundary for every role in this stack; created by pipeline/ (null for none)"
   type        = string
   default     = null
 }

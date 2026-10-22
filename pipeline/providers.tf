@@ -8,8 +8,6 @@ terraform {
     }
   }
 
-  # Separate state from the Kafka stack: pass a different key, e.g.
-  # aws-kafka-sec-codepipeline/cicd/terraform.tfstate (see backend.hcl.example).
   backend "s3" {}
 }
 
@@ -26,7 +24,6 @@ provider "aws" {
     }
   }
 
-  # Same account governance tags the Kafka stack ignores.
   ignore_tags {
     keys = ["CreatedBy", "CreatedDate", "PrincipalId", "custodian_stopped"]
   }

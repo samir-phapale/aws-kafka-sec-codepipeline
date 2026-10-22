@@ -13,3 +13,9 @@ variable "phase3_secret_arn" {
   description = "ARN of the Phase 3 Secrets Manager secret the Kafka instance may read."
   type        = string
 }
+
+variable "permissions_boundary_arn" {
+  description = "Permissions boundary for the IAM roles in this module (null for none)"
+  type        = string
+  default     = null
+}

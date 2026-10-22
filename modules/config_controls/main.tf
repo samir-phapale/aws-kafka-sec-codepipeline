@@ -123,8 +123,9 @@ locals {
 resource "aws_iam_role" "lambda" {
   for_each = local.lambdas
 
-  name               = "${local.name_prefix}-config-${each.key}-role"
-  assume_role_policy = data.aws_iam_policy_document.lambda_assume_role.json
+  name                 = "${local.name_prefix}-config-${each.key}-role"
+  assume_role_policy   = data.aws_iam_policy_document.lambda_assume_role.json
+  permissions_boundary = var.permissions_boundary_arn
 }
 
 resource "aws_iam_role_policy_attachment" "lambda_logs" {
@@ -212,8 +213,9 @@ data "aws_iam_policy_document" "automation_assume_role" {
 }
 
 resource "aws_iam_role" "automation" {
-  name               = "${local.name_prefix}-config-remediation-role"
-  assume_role_policy = data.aws_iam_policy_document.automation_assume_role.json
+  name                 = "${local.name_prefix}-config-remediation-role"
+  assume_role_policy   = data.aws_iam_policy_document.automation_assume_role.json
+  permissions_boundary = var.permissions_boundary_arn
 }
 
 data "aws_iam_policy_document" "automation_s3" {

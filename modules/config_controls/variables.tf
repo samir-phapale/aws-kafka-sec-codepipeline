@@ -35,3 +35,9 @@ variable "lambda_log_retention_days" {
   type        = number
   default     = 14
 }
+
+variable "permissions_boundary_arn" {
+  description = "Permissions boundary for the IAM roles in this module (null for none)"
+  type        = string
+  default     = null
+}

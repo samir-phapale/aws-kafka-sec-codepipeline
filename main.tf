@@ -30,9 +30,10 @@ module "secrets_manager" {
 module "iam" {
   source = "./modules/iam"
 
-  project_name      = var.project_name
-  environment       = var.environment
-  phase3_secret_arn = module.secrets_manager.secret_arn
+  project_name             = var.project_name
+  environment              = var.environment
+  phase3_secret_arn        = module.secrets_manager.secret_arn
+  permissions_boundary_arn = local.permissions_boundary_arn
 }
 
 module "ec2_kafka" {
@@ -54,7 +55,13 @@ module "ec2_kafka" {
   kafka_secret_version_id  = module.secrets_manager.secret_version_id
 }
 
+data "aws_caller_identity" "current" {}
+
+data "aws_partition" "current" {}
+
 locals {
+  permissions_boundary_arn = var.permissions_boundary_name == null ? null : "arn:${data.aws_partition.current.partition}:iam::${data.aws_caller_identity.current.account_id}:policy/${var.permissions_boundary_name}"
+
   compliance_scope_tag_value = coalesce(var.compliance_scope_tag_value, "${var.project_name}-${var.environment}")
 }
 
@@ -67,4 +74,5 @@ module "config_controls" {
   config_snapshot_frequency_hours = var.config_snapshot_frequency_hours
   scope_tag_key                   = var.compliance_scope_tag_key
   scope_tag_value                 = local.compliance_scope_tag_value
+  permissions_boundary_arn        = local.permissions_boundary_arn
 }

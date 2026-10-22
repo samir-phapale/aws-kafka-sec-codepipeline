@@ -1,11 +1,5 @@
-# Validate stage: static checks only. Runs under a role with no AWS
-# permissions beyond logs and the pipeline artifacts.
+# Static checks; also used as the pull request check.
 version: 0.2
-
-env:
-  variables:
-    TF_IN_AUTOMATION: "true"
-    TF_INPUT: "0"
 
 phases:
   install:

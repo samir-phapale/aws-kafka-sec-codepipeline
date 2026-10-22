@@ -1,13 +1,9 @@
-# ---------------------------------------------------------------------------
-# One role per job, so each stage holds only the access it needs:
-#
-#   validate     static checks             no AWS access beyond logs/artifacts
-#   plan         plan on main / destroy    read-only + state lock
-#   pr           plan on pull requests     read-only, no state lock
-#   deploy       apply / destroy           PowerUser + IAM limited to the stack
-#   integration  e2e tests over SSM        the broker instance and its secret
-#   pipeline     CodePipeline itself       start builds, artifacts, approvals
-# ---------------------------------------------------------------------------
+# One role per CodeBuild job:
+#   validate     static checks          logs + pipeline artifacts
+#   pr           static checks on PRs   logs only (it runs the PR author's code)
+#   plan         terraform plan         ReadOnlyAccess + its own state
+#   deploy       apply / destroy        PowerUserAccess + boundary-capped stack roles
+#   integration  e2e tests              the broker and its secret
 
 locals {
   connection_arns = distinct([
@@ -15,56 +11,48 @@ locals {
     replace(aws_codestarconnections_connection.github.arn, ":codestar-connections:", ":codeconnections:"),
   ])
 
+  # The only S3 objects plan and deploy may touch.
+  own_objects = [local.state_object_arn, local.state_lock_arn, "${aws_s3_bucket.artifacts.arn}/*"]
+
   codebuild_roles = {
     validate = {
-      managed_policies = []
-      policies         = [data.aws_iam_policy_document.codebuild_base.json]
-    }
-    plan = {
-      managed_policies = ["arn:${local.partition}:iam::aws:policy/ReadOnlyAccess"]
-      policies = [
-        data.aws_iam_policy_document.codebuild_base.json,
-        data.aws_iam_policy_document.state_read.json,
-        data.aws_iam_policy_document.state_lock.json,
-        data.aws_iam_policy_document.read_only_guardrails.json,
-      ]
+      managed_policy = null
+      policies       = [data.aws_iam_policy_document.logs.json, data.aws_iam_policy_document.artifacts.json]
     }
     pr = {
-      managed_policies = ["arn:${local.partition}:iam::aws:policy/ReadOnlyAccess"]
+      managed_policy = null
+      policies       = [data.aws_iam_policy_document.logs.json, data.aws_iam_policy_document.github_connection.json]
+    }
+    plan = {
+      managed_policy = "ReadOnlyAccess"
       policies = [
-        data.aws_iam_policy_document.codebuild_base.json,
-        data.aws_iam_policy_document.state_read.json,
-        data.aws_iam_policy_document.read_only_guardrails.json,
-        data.aws_iam_policy_document.github_connection.json,
+        data.aws_iam_policy_document.logs.json,
+        data.aws_iam_policy_document.artifacts.json,
+        data.aws_iam_policy_document.plan.json,
       ]
     }
     deploy = {
-      managed_policies = ["arn:${local.partition}:iam::aws:policy/PowerUserAccess"]
+      managed_policy = "PowerUserAccess"
       policies = [
-        data.aws_iam_policy_document.codebuild_base.json,
-        data.aws_iam_policy_document.deploy_iam.json,
+        data.aws_iam_policy_document.logs.json,
+        data.aws_iam_policy_document.artifacts.json,
+        data.aws_iam_policy_document.deploy.json,
         data.aws_iam_policy_document.deploy_guardrails.json,
       ]
     }
     integration = {
-      managed_policies = []
+      managed_policy = null
       policies = [
-        data.aws_iam_policy_document.codebuild_base.json,
+        data.aws_iam_policy_document.logs.json,
+        data.aws_iam_policy_document.artifacts.json,
         data.aws_iam_policy_document.integration.json,
       ]
     }
   }
-
-  codebuild_managed_attachments = merge([
-    for role, cfg in local.codebuild_roles : {
-      for arn in cfg.managed_policies : "${role}:${basename(arn)}" => { role = role, policy_arn = arn }
-    }
-  ]...)
 }
 
 data "aws_iam_policy_document" "codebuild_assume_role" {
   statement {
-    effect  = "Allow"
     actions = ["sts:AssumeRole"]
 
     principals {
@@ -87,7 +75,7 @@ resource "aws_iam_role" "codebuild" {
   assume_role_policy = data.aws_iam_policy_document.codebuild_assume_role.json
 }
 
-data "aws_iam_policy_document" "codebuild_combined" {
+data "aws_iam_policy_document" "codebuild" {
   for_each = local.codebuild_roles
 
   source_policy_documents = each.value.policies
@@ -98,124 +86,41 @@ resource "aws_iam_role_policy" "codebuild" {
 
   name   = "${local.cicd_prefix}-codebuild-${each.key}"
   role   = aws_iam_role.codebuild[each.key].id
-  policy = data.aws_iam_policy_document.codebuild_combined[each.key].json
+  policy = data.aws_iam_policy_document.codebuild[each.key].json
 }
 
 resource "aws_iam_role_policy_attachment" "codebuild" {
-  for_each = local.codebuild_managed_attachments
+  for_each = { for k, v in local.codebuild_roles : k => v.managed_policy if v.managed_policy != null }
 
-  role       = aws_iam_role.codebuild[each.value.role].name
-  policy_arn = each.value.policy_arn
+  role       = aws_iam_role.codebuild[each.key].name
+  policy_arn = "arn:${local.partition}:iam::aws:policy/${each.value}"
 }
 
-# --- Shared by every build: logs, pipeline artifacts, the pipeline key -----
+# --- Building blocks -----------------------------------------------------------
 
-data "aws_iam_policy_document" "codebuild_base" {
+data "aws_iam_policy_document" "logs" {
   statement {
-    sid       = "BuildLogs"
-    effect    = "Allow"
     actions   = ["logs:CreateLogStream", "logs:PutLogEvents"]
     resources = ["${local.codebuild_logs_arn}:*"]
   }
+}
 
+data "aws_iam_policy_document" "artifacts" {
   statement {
-    sid    = "PipelineArtifacts"
-    effect = "Allow"
-    actions = [
-      "s3:GetObject",
-      "s3:GetObjectVersion",
-      "s3:PutObject",
-      "s3:GetBucketAcl",
-      "s3:GetBucketLocation",
-    ]
+    sid       = "Artifacts"
+    actions   = ["s3:GetObject", "s3:GetObjectVersion", "s3:PutObject", "s3:GetBucketAcl", "s3:GetBucketLocation"]
     resources = [aws_s3_bucket.artifacts.arn, "${aws_s3_bucket.artifacts.arn}/*"]
   }
 
   statement {
-    sid       = "PipelineKey"
-    effect    = "Allow"
+    sid       = "ArtifactsKey"
     actions   = ["kms:Decrypt", "kms:Encrypt", "kms:GenerateDataKey*", "kms:DescribeKey"]
     resources = [aws_kms_key.cicd.arn]
   }
 }
 
-# --- Terraform state ---------------------------------------------------------
-
-data "aws_iam_policy_document" "state_read" {
-  statement {
-    sid       = "ListStateBucket"
-    effect    = "Allow"
-    actions   = ["s3:ListBucket"]
-    resources = [local.state_bucket_arn]
-  }
-
-  statement {
-    sid       = "ReadState"
-    effect    = "Allow"
-    actions   = ["s3:GetObject"]
-    resources = [local.state_object_arn, local.state_lock_arn]
-  }
-
-  # Refreshing aws_secretsmanager_secret_version reads the value.
-  statement {
-    sid       = "RefreshStackSecret"
-    effect    = "Allow"
-    actions   = ["secretsmanager:GetSecretValue"]
-    resources = [local.stack_secret_arn]
-  }
-
-  dynamic "statement" {
-    for_each = var.tf_state_kms_key_arn == null ? [] : [var.tf_state_kms_key_arn]
-    content {
-      sid       = "StateKey"
-      effect    = "Allow"
-      actions   = ["kms:Decrypt", "kms:Encrypt", "kms:GenerateDataKey*", "kms:DescribeKey"]
-      resources = [statement.value]
-    }
-  }
-}
-
-data "aws_iam_policy_document" "state_lock" {
-  statement {
-    sid       = "StateLockFile"
-    effect    = "Allow"
-    actions   = ["s3:PutObject", "s3:DeleteObject"]
-    resources = [local.state_lock_arn]
-  }
-}
-
-# ReadOnlyAccess can read every S3 object and SSM parameter in the account.
-# Plans only need the state and the pipeline artifacts.
-data "aws_iam_policy_document" "read_only_guardrails" {
-  statement {
-    sid     = "DenyObjectReadsOutsideStateAndArtifacts"
-    effect  = "Deny"
-    actions = ["s3:GetObject*"]
-    not_resources = [
-      "${local.state_bucket_arn}/*",
-      "${aws_s3_bucket.artifacts.arn}/*",
-    ]
-  }
-
-  statement {
-    sid    = "DenyParameterValues"
-    effect = "Deny"
-    actions = [
-      "ssm:GetParameter",
-      "ssm:GetParameters",
-      "ssm:GetParametersByPath",
-      "ssm:GetParameterHistory",
-    ]
-    resources = ["*"]
-  }
-}
-
 data "aws_iam_policy_document" "github_connection" {
   statement {
-    sid    = "UseGitHubConnection"
-    effect = "Allow"
-    # CodeBuild checks GetConnection when a project with a CodeConnections
-    # source is created or updated.
     actions = [
       "codeconnections:UseConnection",
       "codeconnections:GetConnection",
@@ -228,37 +133,71 @@ data "aws_iam_policy_document" "github_connection" {
   }
 }
 
-# --- Deploy: IAM limited to the Kafka stack's own roles ---------------------
+# --- Plan ----------------------------------------------------------------------
 
-data "aws_iam_policy_document" "deploy_iam" {
+data "aws_iam_policy_document" "plan" {
   statement {
-    sid    = "ManageStackRoles"
-    effect = "Allow"
-    actions = [
-      "iam:CreateRole",
-      "iam:DeleteRole",
-      "iam:GetRole",
-      "iam:UpdateRole",
-      "iam:UpdateAssumeRolePolicy",
-      "iam:TagRole",
-      "iam:UntagRole",
-      "iam:PutRolePolicy",
-      "iam:GetRolePolicy",
-      "iam:DeleteRolePolicy",
-      "iam:ListRolePolicies",
-      "iam:ListAttachedRolePolicies",
-      "iam:ListInstanceProfilesForRole",
-    ]
-    resources = ["arn:${local.partition}:iam::${local.account_id}:role/${local.stack_prefix}-*"]
+    sid       = "ListStateBucket"
+    actions   = ["s3:ListBucket"]
+    resources = [local.state_bucket_arn]
   }
 
-  # Only the AWS managed policies the stack actually attaches, so the role
-  # cannot hand AdministratorAccess to a role it creates.
+  statement {
+    sid       = "ReadState"
+    actions   = ["s3:GetObject"]
+    resources = [local.state_object_arn, local.state_lock_arn]
+  }
+
+  statement {
+    sid       = "StateLock"
+    actions   = ["s3:PutObject", "s3:DeleteObject"]
+    resources = [local.state_lock_arn]
+  }
+
+  # Refreshing aws_secretsmanager_secret_version reads the value.
+  statement {
+    sid       = "RefreshStackSecret"
+    actions   = ["secretsmanager:GetSecretValue"]
+    resources = [local.stack_secret_arn]
+  }
+
+  # ReadOnlyAccess can read every S3 object (other state files included) and
+  # SSM parameter value in the account; plan needs neither.
+  statement {
+    sid           = "DenyOtherObjects"
+    effect        = "Deny"
+    actions       = ["s3:GetObject*"]
+    not_resources = local.own_objects
+  }
+
+  statement {
+    sid       = "DenyParameterValues"
+    effect    = "Deny"
+    actions   = ["ssm:GetParameter", "ssm:GetParameters", "ssm:GetParametersByPath", "ssm:GetParameterHistory"]
+    resources = ["*"]
+  }
+}
+
+# --- Deploy --------------------------------------------------------------------
+
+data "aws_iam_policy_document" "deploy" {
+  # Creating a stack role or changing its permissions requires the boundary.
+  statement {
+    sid       = "ChangeStackRolesWithinBoundary"
+    actions   = ["iam:CreateRole", "iam:PutRolePermissionsBoundary", "iam:PutRolePolicy", "iam:DeleteRolePolicy"]
+    resources = [local.stack_role_arn]
+
+    condition {
+      test     = "StringEquals"
+      variable = "iam:PermissionsBoundary"
+      values   = [aws_iam_policy.stack_boundary.arn]
+    }
+  }
+
   statement {
     sid       = "AttachApprovedManagedPolicies"
-    effect    = "Allow"
     actions   = ["iam:AttachRolePolicy", "iam:DetachRolePolicy"]
-    resources = ["arn:${local.partition}:iam::${local.account_id}:role/${local.stack_prefix}-*"]
+    resources = [local.stack_role_arn]
 
     condition {
       test     = "ArnEquals"
@@ -268,11 +207,33 @@ data "aws_iam_policy_document" "deploy_iam" {
         "arn:${local.partition}:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole",
       ]
     }
+
+    condition {
+      test     = "StringEquals"
+      variable = "iam:PermissionsBoundary"
+      values   = [aws_iam_policy.stack_boundary.arn]
+    }
   }
 
   statement {
-    sid    = "ManageStackInstanceProfiles"
-    effect = "Allow"
+    sid = "ManageStackRoles"
+    actions = [
+      "iam:GetRole",
+      "iam:DeleteRole",
+      "iam:UpdateRole",
+      "iam:UpdateAssumeRolePolicy",
+      "iam:TagRole",
+      "iam:UntagRole",
+      "iam:GetRolePolicy",
+      "iam:ListRolePolicies",
+      "iam:ListAttachedRolePolicies",
+      "iam:ListInstanceProfilesForRole",
+    ]
+    resources = [local.stack_role_arn]
+  }
+
+  statement {
+    sid = "ManageStackInstanceProfiles"
     actions = [
       "iam:CreateInstanceProfile",
       "iam:DeleteInstanceProfile",
@@ -287,32 +248,25 @@ data "aws_iam_policy_document" "deploy_iam" {
 
   statement {
     sid       = "PassStackRoles"
-    effect    = "Allow"
     actions   = ["iam:PassRole"]
-    resources = ["arn:${local.partition}:iam::${local.account_id}:role/${local.stack_prefix}-*"]
+    resources = [local.stack_role_arn]
 
     condition {
       test     = "StringEquals"
       variable = "iam:PassedToService"
-      values = [
-        "ec2.amazonaws.com",
-        "lambda.amazonaws.com",
-        "ssm.amazonaws.com",
-        "config.amazonaws.com",
-      ]
+      values   = ["ec2.amazonaws.com", "lambda.amazonaws.com", "ssm.amazonaws.com", "config.amazonaws.com"]
     }
   }
 
   statement {
-    sid       = "ReadIamForRefresh"
-    effect    = "Allow"
+    sid       = "ReadPolicies"
     actions   = ["iam:GetPolicy", "iam:GetPolicyVersion", "iam:ListPolicyVersions"]
     resources = ["*"]
   }
 }
 
-# PowerUserAccess covers CodeBuild, CodePipeline, KMS, S3 and SNS, so it
-# would let the deploy role rewrite the pipeline that runs it. Deny that.
+# PowerUserAccess would also let the deploy role change the pipeline that
+# runs it, its boundary, and every state file. Deny that.
 data "aws_iam_policy_document" "deploy_guardrails" {
   statement {
     sid       = "DenyPipelineRoles"
@@ -322,86 +276,69 @@ data "aws_iam_policy_document" "deploy_guardrails" {
   }
 
   statement {
-    sid       = "DenyPipelineBuildProjects"
-    effect    = "Deny"
-    actions   = ["codebuild:*"]
-    resources = [local.codebuild_proj_arn]
-  }
-
-  statement {
-    sid       = "DenyPipelines"
-    effect    = "Deny"
-    actions   = ["codepipeline:*"]
-    resources = [local.codepipeline_arn, "${local.codepipeline_arn}/*"]
-  }
-
-  statement {
-    sid    = "DenyPipelineKeyAdministration"
+    sid    = "DenyBoundaryChanges"
     effect = "Deny"
     actions = [
-      "kms:PutKeyPolicy",
-      "kms:ScheduleKeyDeletion",
-      "kms:DisableKey",
-      "kms:DisableKeyRotation",
-      "kms:CreateGrant",
-      "kms:DeleteAlias",
-      "kms:UpdateAlias",
+      "iam:CreatePolicyVersion",
+      "iam:DeletePolicy",
+      "iam:DeletePolicyVersion",
+      "iam:SetDefaultPolicyVersion",
+      "iam:DeleteRolePermissionsBoundary",
     ]
+    resources = [aws_iam_policy.stack_boundary.arn, local.stack_role_arn]
+  }
+
+  statement {
+    sid     = "DenyPipelineResources"
+    effect  = "Deny"
+    actions = ["codebuild:*", "codepipeline:*", "codeconnections:*", "codestar-connections:*", "sns:*"]
+    resources = concat(
+      [local.codebuild_proj_arn, local.codepipeline_arn, "${local.codepipeline_arn}/*", aws_sns_topic.approvals.arn],
+      local.connection_arns,
+    )
+  }
+
+  statement {
+    sid       = "DenyKeyAdministration"
+    effect    = "Deny"
+    actions   = ["kms:PutKeyPolicy", "kms:ScheduleKeyDeletion", "kms:DisableKey", "kms:DisableKeyRotation", "kms:CreateGrant"]
     resources = [aws_kms_key.cicd.arn]
   }
 
   statement {
-    sid    = "DenyArtifactBucketConfiguration"
+    sid    = "DenyBucketSettings"
     effect = "Deny"
     actions = [
       "s3:DeleteBucket",
-      "s3:DeleteBucketPolicy",
       "s3:PutBucketPolicy",
-      "s3:PutBucketPublicAccessBlock",
-      "s3:PutEncryptionConfiguration",
-      "s3:PutLifecycleConfiguration",
+      "s3:DeleteBucketPolicy",
       "s3:PutBucketVersioning",
-      "s3:PutBucketAcl",
-      "s3:PutBucketOwnershipControls",
+      "s3:PutLifecycleConfiguration",
+      "s3:PutEncryptionConfiguration",
+      "s3:PutBucketPublicAccessBlock",
     ]
-    resources = [aws_s3_bucket.artifacts.arn]
+    resources = [aws_s3_bucket.artifacts.arn, local.state_bucket_arn]
   }
 
   statement {
-    sid       = "DenyNotificationTopic"
-    effect    = "Deny"
-    actions   = ["sns:DeleteTopic", "sns:SetTopicAttributes", "sns:Subscribe", "sns:AddPermission", "sns:RemovePermission"]
-    resources = [aws_sns_topic.cicd.arn]
-  }
-
-  statement {
-    sid       = "DenyGitHubConnection"
-    effect    = "Deny"
-    actions   = ["codeconnections:*", "codestar-connections:*"]
-    resources = local.connection_arns
-  }
-
-  statement {
-    sid       = "DenyPipelineLogDeletion"
-    effect    = "Deny"
-    actions   = ["logs:DeleteLogGroup", "logs:DeleteLogStream", "logs:PutRetentionPolicy", "logs:DeleteRetentionPolicy"]
-    resources = [local.codebuild_logs_arn, "${local.codebuild_logs_arn}:*"]
+    sid           = "DenyOtherObjects"
+    effect        = "Deny"
+    actions       = ["s3:GetObject*", "s3:PutObject*", "s3:DeleteObject*"]
+    not_resources = local.own_objects
   }
 }
 
-# --- Integration tests: the broker and its secret, nothing else -------------
+# --- Integration tests -------------------------------------------------------------
 
 data "aws_iam_policy_document" "integration" {
   statement {
-    sid    = "DescribeInstances"
-    effect = "Allow"
+    sid = "Describe"
     actions = [
       "ec2:DescribeInstances",
       "ec2:DescribeInstanceStatus",
       "ec2:DescribeInstanceAttribute",
       "ssm:DescribeInstanceInformation",
       "ssm:GetCommandInvocation",
-      "ssm:ListCommandInvocations",
     ]
     resources = ["*"]
   }
@@ -409,7 +346,6 @@ data "aws_iam_policy_document" "integration" {
   # Cloud Custodian stops the broker nightly.
   statement {
     sid       = "StartStackInstances"
-    effect    = "Allow"
     actions   = ["ec2:StartInstances"]
     resources = ["arn:${local.partition}:ec2:${local.region}:${local.account_id}:instance/*"]
 
@@ -428,7 +364,6 @@ data "aws_iam_policy_document" "integration" {
 
   statement {
     sid       = "RunCommandsOnStackInstances"
-    effect    = "Allow"
     actions   = ["ssm:SendCommand"]
     resources = ["arn:${local.partition}:ec2:${local.region}:${local.account_id}:instance/*"]
 
@@ -446,28 +381,22 @@ data "aws_iam_policy_document" "integration" {
   }
 
   statement {
-    sid       = "RunShellScriptDocument"
-    effect    = "Allow"
+    sid       = "RunShellScript"
     actions   = ["ssm:SendCommand"]
     resources = ["arn:${local.partition}:ssm:${local.region}::document/AWS-RunShellScript"]
   }
 
-  # test_secret_not_in_user_data compares the user data with the real value.
   statement {
     sid       = "ReadStackSecret"
-    effect    = "Allow"
     actions   = ["secretsmanager:GetSecretValue"]
     resources = [local.stack_secret_arn]
   }
 }
 
-# ---------------------------------------------------------------------------
-# CodePipeline service role
-# ---------------------------------------------------------------------------
+# --- CodePipeline ----------------------------------------------------------------
 
 data "aws_iam_policy_document" "codepipeline_assume_role" {
   statement {
-    effect  = "Allow"
     actions = ["sts:AssumeRole"]
 
     principals {
@@ -489,41 +418,27 @@ resource "aws_iam_role" "codepipeline" {
 }
 
 data "aws_iam_policy_document" "codepipeline" {
-  source_policy_documents = [data.aws_iam_policy_document.github_connection.json]
+  source_policy_documents = [
+    data.aws_iam_policy_document.artifacts.json,
+    data.aws_iam_policy_document.github_connection.json,
+  ]
 
   statement {
-    sid    = "Artifacts"
-    effect = "Allow"
-    actions = [
-      "s3:GetObject",
-      "s3:GetObjectVersion",
-      "s3:PutObject",
-      "s3:PutObjectAcl",
-      "s3:GetBucketVersioning",
-      "s3:GetBucketLocation",
-    ]
+    sid       = "ArtifactBucket"
+    actions   = ["s3:GetBucketVersioning", "s3:PutObjectAcl"]
     resources = [aws_s3_bucket.artifacts.arn, "${aws_s3_bucket.artifacts.arn}/*"]
   }
 
   statement {
-    sid       = "PipelineKey"
-    effect    = "Allow"
-    actions   = ["kms:Decrypt", "kms:Encrypt", "kms:GenerateDataKey*", "kms:DescribeKey"]
-    resources = [aws_kms_key.cicd.arn]
-  }
-
-  statement {
     sid       = "RunBuilds"
-    effect    = "Allow"
     actions   = ["codebuild:StartBuild", "codebuild:BatchGetBuilds", "codebuild:StopBuild"]
     resources = [local.codebuild_proj_arn]
   }
 
   statement {
     sid       = "ApprovalNotifications"
-    effect    = "Allow"
     actions   = ["sns:Publish"]
-    resources = [aws_sns_topic.cicd.arn]
+    resources = [aws_sns_topic.approvals.arn]
   }
 }
 

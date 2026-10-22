@@ -1,12 +1,7 @@
-# Apply stage: applies exactly the tfplan the approver reviewed. Terraform
-# refuses the plan if the state changed after it was made.
-# The exported variables feed the Integration stage (none are secret).
 version: 0.2
 
 env:
-  variables:
-    TF_IN_AUTOMATION: "true"
-    TF_INPUT: "0"
+  # Passed to the Integration stage.
   exported-variables:
     - INSTANCE_ID
     - TOPIC_NAME
@@ -16,12 +11,9 @@ phases:
   install:
     commands:
       - bash scripts/ci/install-tools.sh terraform
-  pre_build:
-    commands:
-      - test -f tfplan
-      - bash scripts/ci/tf-init.sh
   build:
     commands:
+      - bash scripts/ci/tf-init.sh
       - terraform apply -input=false -no-color tfplan
       - export INSTANCE_ID="$(terraform output -raw instance_id)"
       - export TOPIC_NAME="$(terraform output -raw kafka_topic_name)"
